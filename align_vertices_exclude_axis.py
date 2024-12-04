@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Align Vertices with Axis Exclusion",
+    "name": "Align Vertices with Axis Exclusion and Grouping",
     "author": "Your Name",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 6, 0),
     "location": "Hotkey (Shift+X)",
-    "description": "Pie Menu for Aligning Vertices with Axis Exclusion",
+    "description": "Pie Menu for Aligning Vertices with Axis Exclusion and Grouping by Distance",
     "warning": "",
     "wiki_url": "",
     "category": "3D View",
@@ -12,15 +12,33 @@ bl_info = {
 
 import bpy
 import bmesh
-
-ALIGN_VERTICES_OPERATOR = "mesh.align_vertices_exclude_axis"
+from mathutils import Vector
 
 
 class AlignVerticesExcludeAxisOperator(bpy.types.Operator):
     """Align vertices excluding one axis"""
-    bl_idname = ALIGN_VERTICES_OPERATOR
+    bl_idname = "mesh.align_vertices_exclude_axis"
     bl_label = "Align Vertices"
-    exclude_axis: bpy.props.StringProperty()
+    bl_options = {'REGISTER', 'UNDO'}
+
+    exclude_axis: bpy.props.EnumProperty(
+        name="Exclude Axis",
+        description="Axis to exclude from alignment",
+        items=[
+            ('X', "X", "Exclude X-axis"),
+            ('Y', "Y", "Exclude Y-axis"),
+            ('Z', "Z", "Exclude Z-axis"),
+        ],
+        default='X'
+    )
+
+    merge_distance: bpy.props.FloatProperty(
+        name="Merge Distance",
+        description="Maximum distance for grouping vertices",
+        default=0.1,
+        min=0.0,
+        precision=4,  # Количество отображаемых знаков после запятой
+    )
 
     def execute(self, context):
         obj = context.object
@@ -35,28 +53,52 @@ class AlignVerticesExcludeAxisOperator(bpy.types.Operator):
             self.report({'WARNING'}, "No vertices selected.")
             return {'CANCELLED'}
 
-        # Calculate average position
-        avg_position = [0.0, 0.0, 0.0]
+        # Group vertices based on distance
+        groups = []
         for vert in selected_verts:
-            avg_position[0] += vert.co.x
-            avg_position[1] += vert.co.y
-            avg_position[2] += vert.co.z
-        avg_position = [coord / len(selected_verts) for coord in avg_position]
+            found_group = None
+            for group in groups:
+                for other_vert in group:
+                    if self.is_within_distance(vert.co, other_vert.co):
+                        found_group = group
+                        break
+                if found_group:
+                    break
+            if found_group:
+                found_group.append(vert)
+            else:
+                groups.append([vert])
 
-        # Align vertices
-        for vert in selected_verts:
-            if self.exclude_axis == 'X':
-                vert.co.y = avg_position[1]
-                vert.co.z = avg_position[2]
-            elif self.exclude_axis == 'Y':
-                vert.co.x = avg_position[0]
-                vert.co.z = avg_position[2]
-            elif self.exclude_axis == 'Z':
-                vert.co.x = avg_position[0]
-                vert.co.y = avg_position[1]
+        # Align each group
+        for group in groups:
+            avg_position = Vector((0.0, 0.0, 0.0))
+            for vert in group:
+                avg_position += vert.co
+            avg_position /= len(group)
+
+            for vert in group:
+                if self.exclude_axis == 'X':
+                    vert.co.y = avg_position.y
+                    vert.co.z = avg_position.z
+                elif self.exclude_axis == 'Y':
+                    vert.co.x = avg_position.x
+                    vert.co.z = avg_position.z
+                elif self.exclude_axis == 'Z':
+                    vert.co.x = avg_position.x
+                    vert.co.y = avg_position.y
 
         bmesh.update_edit_mesh(obj.data)
         return {'FINISHED'}
+
+    def is_within_distance(self, co1, co2):
+        """Check if two coordinates are within the merge distance, excluding the selected axis."""
+        if self.exclude_axis == 'X':
+            dist = (co1.y - co2.y) ** 2 + (co1.z - co2.z) ** 2
+        elif self.exclude_axis == 'Y':
+            dist = (co1.x - co2.x) ** 2 + (co1.z - co2.z) ** 2
+        elif self.exclude_axis == 'Z':
+            dist = (co1.x - co2.x) ** 2 + (co1.y - co2.y) ** 2
+        return dist <= self.merge_distance ** 2
 
 
 class AlignVerticesPieMenu(bpy.types.Menu):
@@ -65,9 +107,9 @@ class AlignVerticesPieMenu(bpy.types.Menu):
     def draw(self, _context):
         layout = self.layout
         pie = layout.menu_pie()
-        pie.operator(ALIGN_VERTICES_OPERATOR, text="Exclude X").exclude_axis = 'X'
-        pie.operator(ALIGN_VERTICES_OPERATOR, text="Exclude Y").exclude_axis = 'Y'
-        pie.operator(ALIGN_VERTICES_OPERATOR, text="Exclude Z").exclude_axis = 'Z'
+        pie.operator("mesh.align_vertices_exclude_axis", text="Exclude X").exclude_axis = 'X'
+        pie.operator("mesh.align_vertices_exclude_axis", text="Exclude Y").exclude_axis = 'Y'
+        pie.operator("mesh.align_vertices_exclude_axis", text="Exclude Z").exclude_axis = 'Z'
 
 
 addon_keymaps = []
