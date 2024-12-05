@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Align Vertices with Axis Exclusion and Grouping",
     "author": "Your Name",
-    "version": (1, 1),
+    "version": (1, 2),
     "blender": (3, 6, 0),
     "location": "Hotkey (Shift+X)",
     "description": "Pie Menu for Aligning Vertices with Axis Exclusion and Grouping by Distance",
@@ -37,7 +37,7 @@ class AlignVerticesExcludeAxisOperator(bpy.types.Operator):
         description="Maximum distance for grouping vertices",
         default=0.1,
         min=0.0,
-        precision=4,  # Количество отображаемых знаков после запятой
+        precision=4,
     )
 
     def execute(self, context):
@@ -101,8 +101,9 @@ class AlignVerticesExcludeAxisOperator(bpy.types.Operator):
         return dist <= self.merge_distance ** 2
 
 
-class AlignVerticesPieMenu(bpy.types.Menu):
+class AlignVerticesPieMenuMT(bpy.types.Menu):  # Переименовано
     bl_label = "Align Vertices"
+    bl_idname = "VIEW3D_MT_align_vertices_pie_menu"  # Исправлено имя
 
     def draw(self, _context):
         layout = self.layout
@@ -117,13 +118,15 @@ addon_keymaps = []
 
 def register():
     bpy.utils.register_class(AlignVerticesExcludeAxisOperator)
-    bpy.utils.register_class(AlignVerticesPieMenu)
+    bpy.utils.register_class(AlignVerticesPieMenuMT)
 
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name="3D View", space_type='VIEW_3D')
     kmi = km.keymap_items.new("wm.call_menu_pie", type='X', value='PRESS', shift=True)
-    kmi.properties.name = "AlignVerticesPieMenu"
+    kmi.properties.name = "VIEW3D_MT_align_vertices_pie_menu"
     addon_keymaps.append((km, kmi))
+
+    print("Pie menu 'Align Vertices' registered with hotkey Shift+X.")
 
 
 def unregister():
@@ -131,7 +134,7 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
     bpy.utils.unregister_class(AlignVerticesExcludeAxisOperator)
-    bpy.utils.unregister_class(AlignVerticesPieMenu)
+    bpy.utils.unregister_class(AlignVerticesPieMenuMT)
 
 
 if __name__ == "__main__":

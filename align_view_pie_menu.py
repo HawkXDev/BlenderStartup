@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Align View to Active with Orthographic",
     "author": "Your Name",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 6, 0),
     "location": "Hotkey (Shift+Q)",
     "description": "Pie Menu for Aligning View to Active with Orthographic View",
@@ -49,7 +49,7 @@ class AlignViewToActiveOperator(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class AlignViewToActivePieMenu(bpy.types.Menu):
+class VIEW3D_MT_AlignViewToActivePieMenu(bpy.types.Menu):  # Имя меню изменено
     bl_label = "Align View to Active"
 
     def draw(self, _context):
@@ -70,12 +70,14 @@ addon_keymaps = []
 
 def register():
     bpy.utils.register_class(AlignViewToActiveOperator)
-    bpy.utils.register_class(AlignViewToActivePieMenu)
+    bpy.utils.register_class(VIEW3D_MT_AlignViewToActivePieMenu)
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name="3D View", space_type='VIEW_3D')
     kmi = km.keymap_items.new("wm.call_menu_pie", type='Q', value='PRESS', shift=True)
-    kmi.properties.name = "AlignViewToActivePieMenu"
+    kmi.properties.name = "VIEW3D_MT_AlignViewToActivePieMenu"
     addon_keymaps.append((km, kmi))
+
+    print("Pie menu 'Align View to Active' registered with hotkey Shift+Q.")
 
 
 def unregister():
@@ -83,7 +85,7 @@ def unregister():
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
     bpy.utils.unregister_class(AlignViewToActiveOperator)
-    bpy.utils.unregister_class(AlignViewToActivePieMenu)
+    bpy.utils.unregister_class(VIEW3D_MT_AlignViewToActivePieMenu)  # Изменено имя
 
 
 if __name__ == "__main__":
