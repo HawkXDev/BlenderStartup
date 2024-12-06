@@ -16,15 +16,15 @@ from mathutils import Vector
 
 
 class EqualizeDistancesOperator(bpy.types.Operator):
-    """Equalize distances along edges between two selected groups of vertices"""
+    """Equalize distances along edges between a saved base group and selected vertices"""
     bl_idname = "mesh.equalize_distances"
     bl_label = "Equalize Distances"
     bl_options = {'REGISTER', 'UNDO'}
 
     distance_factor: bpy.props.FloatProperty(
         name="Distance Factor",
-        description="Position factor along the edges (0: near first group, 1: original position, >1: further from first group)",
-        default=0.5,
+        description="Position factor along the perpendicular (0: at base, 1: at original, >1: further from base)",
+        default=1.0,
         min=0.0,
         max=10.0,
         step=0.1,
@@ -39,7 +39,7 @@ class EqualizeDistancesOperator(bpy.types.Operator):
 
     orthogonal_to_curve: bpy.props.BoolProperty(
         name="Make Orthogonal to Curve",
-        description="If enabled, adjust edges to be orthogonal in the plane",
+        description="If enabled, adjust edges to be orthogonal to the curve",
         default=False
     )
 
@@ -50,18 +50,21 @@ class EqualizeDistancesOperator(bpy.types.Operator):
             return {'CANCELLED'}
 
         bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+
+        if "base_group" not in obj or not obj["base_group"]:
+            self.report({'WARNING'}, "No base group set. Please save a base group first.")
+            return {'CANCELLED'}
+
         selected_verts = [v for v in bm.verts if v.select]
-
-        if len(selected_verts) < 2:
-            self.report({'WARNING'}, "At least two groups of vertices must be selected.")
+        if len(selected_verts) < 1:
+            self.report({'WARNING'}, "At least one vertex must be selected for the second group.")
             return {'CANCELLED'}
 
-        group1, group2 = self.identify_groups(selected_verts)
+        group1 = [bm.verts[i] for i in obj["base_group"] if i < len(bm.verts)]
+        group2 = selected_verts
 
-        if not group1 or not group2:
-            self.report({'WARNING'}, "Could not identify two groups of vertices.")
-            return {'CANCELLED'}
-
+        # Calculate average edge length if equalize lengths is enabled
         average_length = None
         if self.equalize_lengths:
             total_length = sum(e.calc_length() for v2 in group2 for e in v2.link_edges if e.other_vert(v2) in group1)
@@ -72,49 +75,73 @@ class EqualizeDistancesOperator(bpy.types.Operator):
             average_length = total_length / edge_count
 
         for v2 in group2:
-            connected_edges = [e for e in v2.link_edges if e.other_vert(v2) in group1]
-            if not connected_edges:
-                continue
+            closest_base = min(group1, key=lambda bv: (v2.co - bv.co).length)
+            neighbors = [e.other_vert(closest_base) for e in closest_base.link_edges if
+                         e.other_vert(closest_base) in group1]
 
-            avg_pos = Vector((0.0, 0.0, 0.0))
-            for edge in connected_edges:
-                v1 = edge.other_vert(v2)
-                edge_length = edge.calc_length() if not self.equalize_lengths else average_length
+            if not neighbors:
+                continue  # Skip if no neighbors
 
-                if self.orthogonal_to_curve:
-                    # Calculate the tangent and normal in the plane
-                    neighbors = [e.other_vert(v1) for e in v1.link_edges if e.other_vert(v1) != v2]
-                    if len(neighbors) < 2:
-                        continue  # Need at least two neighbors to calculate a normal
+            # Get local tangent based on one or two neighbors
+            if len(neighbors) == 1:
+                local_tangent = (closest_base.co - neighbors[0].co).normalized()
+            else:
+                neighbor1, neighbor2 = neighbors[:2]
+                local_tangent = (neighbor2.co - neighbor1.co).normalized()
 
-                    tangent = (neighbors[1].co - neighbors[0].co).normalized()
-                    edge_vec = (v2.co - v1.co).normalized()
-                    projection = edge_vec - tangent * edge_vec.dot(tangent)
+            perpendicular = local_tangent.cross((v2.co - closest_base.co)).normalized().cross(
+                local_tangent).normalized()
 
-                    # Correct projection length with distance_factor
-                    projection_length = edge_length * self.distance_factor
-                    target_pos = v1.co + projection.normalized() * projection_length
+            # Calculate new position
+            if self.orthogonal_to_curve:
+                edge_length = average_length if self.equalize_lengths else (v2.co - closest_base.co).length
+                new_position = closest_base.co + perpendicular * edge_length * self.distance_factor
+            else:
+                direction = (v2.co - closest_base.co).normalized()
+                edge_length = average_length if self.equalize_lengths else (v2.co - closest_base.co).length
+                new_position = closest_base.co + direction * edge_length * self.distance_factor
 
-                    avg_pos += target_pos
-                else:
-                    # Standard behavior
-                    direction = (v2.co - v1.co).normalized()
-                    target_pos = v1.co + direction * edge_length
-                    avg_pos += v1.co + (target_pos - v1.co) * self.distance_factor
-
-            avg_pos /= len(connected_edges)
-            v2.co = avg_pos
+            v2.co = new_position  # Apply new position
 
         bmesh.update_edit_mesh(obj.data)
-        self.report({'INFO'},
-                    f"Distances equalized{' with orthogonal adjustment' if self.orthogonal_to_curve else ''}.")
+        self.report({'INFO'}, "Equalized distances relative to base group.")
         return {'FINISHED'}
 
-    def identify_groups(self, selected_verts):
-        midpoint = len(selected_verts) // 2
-        group1 = selected_verts[:midpoint]
-        group2 = selected_verts[midpoint:]
-        return group1, group2
+
+class SaveBaseGroupOperator(bpy.types.Operator):
+    """Save the current selection as a base group"""
+    bl_idname = "mesh.save_base_group"
+    bl_label = "Save Base Group"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.mode != 'EDIT':
+            self.report({'WARNING'}, "Please enter Edit Mode and select vertices.")
+            return {'CANCELLED'}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+
+        selected_verts = [v.index for v in bm.verts if v.select]
+        if not selected_verts:
+            self.report({'WARNING'}, "No vertices selected.")
+            return {'CANCELLED'}
+
+        obj["base_group"] = selected_verts
+        self.report({'INFO'}, f"Saved {len(selected_verts)} vertices as base group.")
+        return {'FINISHED'}
+
+
+class EqualizeDistancesSubMenu(bpy.types.Menu):
+    """Submenu for Equalize Distances"""
+    bl_label = "Equalize Distances Options"
+    bl_idname = "VIEW3D_MT_equalize_distances_submenu"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(SaveBaseGroupOperator.bl_idname, text="Save Base Group")
+        layout.operator(EqualizeDistancesOperator.bl_idname, text="Equalize to Base Group")
 
 
 class JoinNearestVerticesOperator(bpy.types.Operator):
@@ -275,16 +302,16 @@ class LogVerticesSubMenu(bpy.types.Menu):
         layout.operator(SaveSelectionOperator.bl_idname, text="Save to Group 2").group_index = 2
 
 
-class JoinNearestPieMenu(bpy.types.Menu):
-    """Pie Menu for Join and Equalize Vertices"""
-    bl_label = "Join and Equalize Vertices"
-    bl_idname = "VIEW3D_MT_join_nearest_pie_menu"
+class VertexOperationsPieMenu(bpy.types.Menu):
+    """Pie Menu for Vertex Operations"""
+    bl_label = "Vertex Operations"
+    bl_idname = "VIEW3D_MT_vertex_operations_pie_menu"
 
     def draw(self, context):
         layout = self.layout
         pie = layout.menu_pie()
         pie.operator(JoinNearestVerticesOperator.bl_idname, text="Join Nearest Vertices")
-        pie.operator(EqualizeDistancesOperator.bl_idname, text="Equalize Distances")
+        pie.menu(EqualizeDistancesSubMenu.bl_idname, text="Equalize Distances")
         pie.menu(LogVerticesSubMenu.bl_idname, text="Log Selected Vertices")
 
 
@@ -294,18 +321,20 @@ addon_keymaps = []
 def register():
     bpy.utils.register_class(JoinNearestVerticesOperator)
     bpy.utils.register_class(EqualizeDistancesOperator)
+    bpy.utils.register_class(SaveBaseGroupOperator)
+    bpy.utils.register_class(EqualizeDistancesSubMenu)
     bpy.utils.register_class(LogSelectedVerticesOperator)
     bpy.utils.register_class(SaveSelectionOperator)
     bpy.utils.register_class(LogVerticesSubMenu)
-    bpy.utils.register_class(JoinNearestPieMenu)
+    bpy.utils.register_class(VertexOperationsPieMenu)
 
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name="3D View", space_type='VIEW_3D')
     kmi = km.keymap_items.new("wm.call_menu_pie", type='J', value='PRESS', shift=True)
-    kmi.properties.name = JoinNearestPieMenu.bl_idname
+    kmi.properties.name = VertexOperationsPieMenu.bl_idname
     addon_keymaps.append((km, kmi))
 
-    print("Pie menu 'Join and Equalize Vertices' registered with hotkey Shift+J.")
+    print("Pie menu 'Vertex Operations' registered with hotkey Shift+J.")
 
 
 def unregister():
@@ -314,10 +343,12 @@ def unregister():
     addon_keymaps.clear()
     bpy.utils.unregister_class(JoinNearestVerticesOperator)
     bpy.utils.unregister_class(EqualizeDistancesOperator)
+    bpy.utils.unregister_class(SaveBaseGroupOperator)
+    bpy.utils.unregister_class(EqualizeDistancesSubMenu)
     bpy.utils.unregister_class(LogSelectedVerticesOperator)
     bpy.utils.unregister_class(SaveSelectionOperator)
     bpy.utils.unregister_class(LogVerticesSubMenu)
-    bpy.utils.unregister_class(JoinNearestPieMenu)
+    bpy.utils.unregister_class(VertexOperationsPieMenu)
 
 
 if __name__ == "__main__":
