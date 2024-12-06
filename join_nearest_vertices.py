@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Join and Equalize Vertices",
     "author": "Your Name",
-    "version": (1, 6),
+    "version": (1, 7),
     "blender": (3, 6, 0),
     "location": "Hotkey (Shift+J)",
-    "description": "Join nearest vertices and equalize distances between two groups",
+    "description": "Join nearest vertices, equalize distances, and manage vertex groups",
     "warning": "",
     "wiki_url": "",
     "category": "Mesh",
@@ -136,24 +136,19 @@ class JoinNearestVerticesOperator(bpy.types.Operator):
             self.report({'WARNING'}, "At least two vertices must be selected.")
             return {'CANCELLED'}
 
-        # Find groups of connected vertices among the selected ones
         groups = self.find_vertex_groups(selected_verts, bm)
 
         if len(groups) != 2:
-            self.report({'WARNING'},
-                        f"Two separate groups of connected vertices are required. Found {len(groups)} groups.")
+            self.report({'WARNING'}, "Two separate groups of connected vertices are required.")
             return {'CANCELLED'}
 
         group1, group2 = groups
-
-        # Find nearest pairs between two groups
         pairs = self.find_nearest_pairs(group1, group2)
 
         if not pairs:
-            self.report({'WARNING'}, "No nearest pairs found between groups.")
+            self.report({'WARNING'}, "No nearest pairs found.")
             return {'CANCELLED'}
 
-        # Create join cuts between pairs
         for v1, v2 in pairs:
             self.create_join_cut(bm, v1, v2)
 
@@ -162,7 +157,6 @@ class JoinNearestVerticesOperator(bpy.types.Operator):
         return {'FINISHED'}
 
     def find_vertex_groups(self, verts, bm):
-        """Find connected groups of selected vertices"""
         visited = set()
         groups = []
 
@@ -187,12 +181,7 @@ class JoinNearestVerticesOperator(bpy.types.Operator):
         return groups
 
     def find_nearest_pairs(self, group1, group2):
-        """Find nearest pairs of vertices between two groups"""
-        pairs = []
-        for v1 in group1:
-            nearest_v2 = min(group2, key=lambda v2: (v1.co - v2.co).length)
-            pairs.append((v1, nearest_v2))
-        return pairs
+        return [(v1, min(group2, key=lambda v2: (v1.co - v2.co).length)) for v1 in group1]
 
     def create_join_cut(self, bm, v1, v2):
         """Create a join cut between two vertices"""
@@ -200,6 +189,90 @@ class JoinNearestVerticesOperator(bpy.types.Operator):
         v1.select = True
         v2.select = True
         bpy.ops.mesh.vert_connect_path()
+
+
+class LogSelectedVerticesOperator(bpy.types.Operator):
+    """Log coordinates of selected vertices and saved groups"""
+    bl_idname = "mesh.log_selected_vertices"
+    bl_label = "Log Selected Vertices"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.mode != 'EDIT':
+            self.report({'WARNING'}, "Please enter Edit Mode and select vertices.")
+            return {'CANCELLED'}
+
+        # Логирование выделенных вершин
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        selected_verts = [v for v in bm.verts if v.select]
+
+        if selected_verts:
+            print("Selected Vertices:")
+            for i, v in enumerate(selected_verts):
+                print(f"Vertex {i + 1}: ({v.co.x:.6f}, {v.co.y:.6f}, {v.co.z:.6f})")
+        else:
+            self.report({'INFO'}, "No vertices selected.")
+
+        # Логирование сохраненных групп
+        if "saved_groups" in obj:
+            print("\nSaved Groups:")
+            for group_name, vertex_indices in obj["saved_groups"].items():
+                print(f"{group_name}:")
+                for i, vert_index in enumerate(vertex_indices):
+                    v = bm.verts[vert_index]  # Получаем вершину по индексу
+                    print(f"  Vertex {i + 1}: ({v.co.x:.6f}, {v.co.y:.6f}, {v.co.z:.6f})")
+        else:
+            print("No saved groups found.")
+
+        self.report({'INFO'}, "Logged all selected vertices and saved groups.")
+        return {'FINISHED'}
+
+
+class SaveSelectionOperator(bpy.types.Operator):
+    """Save current selection to a group"""
+    bl_idname = "mesh.save_selection"
+    bl_label = "Save Selection to Group"
+    bl_options = {'REGISTER'}
+
+    group_index: bpy.props.IntProperty(name="Group Index", default=1, min=1, max=2)
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.mode != 'EDIT':
+            self.report({'WARNING'}, "Please enter Edit Mode and select vertices.")
+            return {'CANCELLED'}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+
+        selected_verts = [v.index for v in bm.verts if v.select]
+        if not selected_verts:
+            self.report({'WARNING'}, "No vertices selected.")
+            return {'CANCELLED'}
+
+        # Инициализируем хранилище пользовательских данных, если его нет
+        if "saved_groups" not in obj:
+            obj["saved_groups"] = {}
+
+        # Сохраняем выборку в указанную группу
+        obj["saved_groups"][f"group_{self.group_index}"] = selected_verts
+
+        self.report({'INFO'}, f"Saved {len(selected_verts)} vertices to group {self.group_index}.")
+        return {'FINISHED'}
+
+
+class LogVerticesSubMenu(bpy.types.Menu):
+    """Submenu for Log Selected Vertices"""
+    bl_label = "Log Vertices Options"
+    bl_idname = "VIEW3D_MT_log_vertices_submenu"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(LogSelectedVerticesOperator.bl_idname, text="Log All Selected Vertices")
+        layout.operator(SaveSelectionOperator.bl_idname, text="Save to Group 1").group_index = 1
+        layout.operator(SaveSelectionOperator.bl_idname, text="Save to Group 2").group_index = 2
 
 
 class JoinNearestPieMenu(bpy.types.Menu):
@@ -212,6 +285,7 @@ class JoinNearestPieMenu(bpy.types.Menu):
         pie = layout.menu_pie()
         pie.operator(JoinNearestVerticesOperator.bl_idname, text="Join Nearest Vertices")
         pie.operator(EqualizeDistancesOperator.bl_idname, text="Equalize Distances")
+        pie.menu(LogVerticesSubMenu.bl_idname, text="Log Selected Vertices")
 
 
 addon_keymaps = []
@@ -220,9 +294,11 @@ addon_keymaps = []
 def register():
     bpy.utils.register_class(JoinNearestVerticesOperator)
     bpy.utils.register_class(EqualizeDistancesOperator)
+    bpy.utils.register_class(LogSelectedVerticesOperator)
+    bpy.utils.register_class(SaveSelectionOperator)
+    bpy.utils.register_class(LogVerticesSubMenu)
     bpy.utils.register_class(JoinNearestPieMenu)
 
-    # Register hotkey
     wm = bpy.context.window_manager
     km = wm.keyconfigs.addon.keymaps.new(name="3D View", space_type='VIEW_3D')
     kmi = km.keymap_items.new("wm.call_menu_pie", type='J', value='PRESS', shift=True)
@@ -238,6 +314,9 @@ def unregister():
     addon_keymaps.clear()
     bpy.utils.unregister_class(JoinNearestVerticesOperator)
     bpy.utils.unregister_class(EqualizeDistancesOperator)
+    bpy.utils.unregister_class(LogSelectedVerticesOperator)
+    bpy.utils.unregister_class(SaveSelectionOperator)
+    bpy.utils.unregister_class(LogVerticesSubMenu)
     bpy.utils.unregister_class(JoinNearestPieMenu)
 
 
