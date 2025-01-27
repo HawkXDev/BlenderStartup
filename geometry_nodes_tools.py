@@ -163,26 +163,26 @@ class OBJECT_OT_GenerateCylinderGeometryNodes(bpy.types.Operator):
             self.report({'WARNING'}, "Please select a Mesh object.")
             return {'CANCELLED'}
 
-        # Additional check if object is a cylinder-like mesh
+        # Дополнительная проверка: объект похож на цилиндр
         if len(obj.data.polygons) == 0 or len(obj.data.vertices) == 0:
             self.report({'WARNING'}, "The selected object does not appear to be a cylinder.")
             return {'CANCELLED'}
 
         vertices, height, radius = calculate_cylinder_parameters(obj)
 
-        # Add Geometry Nodes modifier
+        # Добавляем модификатор Geometry Nodes
         geo_nodes = obj.modifiers.new(name="GeometryNodes", type='NODES')
         node_tree = bpy.data.node_groups.new(name=f"{obj.name}_Geometry", type='GeometryNodeTree')
         geo_nodes.node_group = node_tree
 
-        # Create interface
+        # Создаём интерфейс
         interface = node_tree.interface
         interface.new_socket(name="Vertices", in_out='INPUT', socket_type='NodeSocketInt')
         interface.new_socket(name="Height", in_out='INPUT', socket_type='NodeSocketFloat')
         interface.new_socket(name="Radius", in_out='INPUT', socket_type='NodeSocketFloat')
         interface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
-        # Create nodes
+        # Создаём узлы
         nodes = node_tree.nodes
         links = node_tree.links
 
@@ -192,17 +192,70 @@ class OBJECT_OT_GenerateCylinderGeometryNodes(bpy.types.Operator):
         cylinder_node = nodes.new(type="GeometryNodeMeshCylinder")
         cylinder_node.location = (0, 0)
 
-        # Connect Cylinder to output
+        # Подключаем узлы
         links.new(cylinder_node.outputs["Mesh"], group_output.inputs[0])
 
-        # Set default values
+        # Устанавливаем значения по умолчанию
         cylinder_node.inputs["Vertices"].default_value = vertices
         cylinder_node.inputs["Depth"].default_value = height
         cylinder_node.inputs["Radius"].default_value = radius
 
+        # Ориентация нового цилиндра
+        self.align_geometry_nodes_to_object(obj, geo_nodes)
+
         self.report({'INFO'},
                     f"Generated Geometry Nodes for '{obj.name}' (Vertices={vertices}, Height={height}, Radius={radius})")
         return {'FINISHED'}
+
+    def align_geometry_nodes_to_object(self, obj, modifier):
+        """Align the Geometry Nodes cylinder to match the orientation of the original object."""
+
+        import bmesh
+        from mathutils import Vector
+
+        # Создаём bmesh из оригинального объекта
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+
+        # Получаем нормаль основания цилиндра
+        face_normals = [face.normal for face in bm.faces if len(face.verts) > 3]
+        if len(face_normals) < 2:
+            bm.free()
+            raise ValueError("Object does not have clear cylindrical bases.")
+
+        # Нормаль основания цилиндра
+        cylinder_axis = face_normals[0].normalized()
+        bm.free()
+
+        # Вычисляем вращение между осью Z и осью цилиндра
+        z_axis = Vector((0, 0, 1))
+        rotation = z_axis.rotation_difference(cylinder_axis).to_euler()
+
+        # Работа с деревом узлов Geometry Nodes
+        node_tree = modifier.node_group
+        nodes = node_tree.nodes
+        links = node_tree.links
+
+        # Поиск узла Group Output
+        group_output = next((node for node in nodes if isinstance(node, bpy.types.NodeGroupOutput)), None)
+        if not group_output:
+            raise ValueError("Group Output node not found in the node tree")
+
+        # Добавление узла Transform
+        transform_node = nodes.new(type="GeometryNodeTransform")
+        transform_node.location = (200, 0)
+
+        # Поиск узла цилиндра
+        cylinder_node = next((node for node in nodes if isinstance(node, bpy.types.GeometryNodeMeshCylinder)), None)
+        if not cylinder_node:
+            raise ValueError("Cylinder node not found in the node tree")
+
+        # Подключение узлов
+        links.new(cylinder_node.outputs["Mesh"], transform_node.inputs["Geometry"])
+        links.new(transform_node.outputs["Geometry"], group_output.inputs["Geometry"])
+
+        # Установка вращения для узла Transform
+        transform_node.inputs["Rotation"].default_value = rotation
 
 
 class VIEW3D_MT_GenerateGeometryNodesSubMenu(bpy.types.Menu):
